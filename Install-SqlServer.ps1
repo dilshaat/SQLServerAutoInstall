@@ -33,6 +33,23 @@ param(
 	[string]$LocalPathISO
 )
 
+if ($SQLVersion -eq 2014 -or $SQLVersion -eq 2012) {
+	$Net35State = (get-WindowsFeature -Name 'NET-Framework-Core')."InstallState"
+	if ($Net35State -ne 'Installed') {
+		Write-Warning "SQL Server $SqlVersion has dependencies on .NET Framework 3.5 SP1 and it is not installed on this machine."
+		Write-Warning "Trying to install it..., your computer might restart."
+		Install-WindowsFeature -Name 'NET-Framework-Core' -Restart
+		$Net35State = (get-WindowsFeature -Name 'NET-Framework-Core')."InstallState"
+		if ($Net35State -eq "Installed") {
+			Write-Host ".NET Framework 3.5 SP1 is installed successfuly. Moving on to install SQL Server $SqlVersion."
+		} else {
+			throw "Something went wrong during .NET Framework 3.5 installation. It might be the Network issue, Windows being unable to download. Please Install .NET 3.5 maually and try reinstall SQL Server $SqlServer." 
+		}
+	} else {
+		Write-Host ".NET Framework 3.5 detected, moving on to install SQL Server..."
+	}
+}
+
 if ($PSCmdlet.ParameterSetName -eq "Online") {
 	Write-Host "Online download option is chosen by you." -ForegroundColor Magenta
 	Write-Host "An Internet connection or valid internal HTTP connection is required" -ForegroundColor Magenta
@@ -134,13 +151,14 @@ if ($PSCmdlet.ParameterSetName -eq 'Local') {
 	if ($LocalPathISO -eq '' -or $null -eq $LocalPathISO) {
 		throw "The path provided is an empty string or null value."
 	} 
-	if (Test-Path $LocalPathISO) {
+	if (!(Test-Path $LocalPathISO)) {
 		throw "The path provided is not reachable, please confirm the path is correct and reachable by this machine $env:COMPUTERNAME."
 	} 
 	Write-Host "Copying the ISO file pointed by you to this project folder:"
 	Write-Host "From: '$LocalPathISO' To: $MediaFilePath ..."
 	$StartTime = Get-Date
 	Copy-Item -Path $LocalPathISO -Destination $MediaFilePath
+	$EndTime = Get-Date
 	Write-Host "Time Taken to copy the ISO file: $(($EndTime.Subtract($StartTime)).Seconds) second(s)"
 }
 
@@ -178,6 +196,8 @@ Get-Service *sql*
 
 $env:Path += ";C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn" # 2019
 $env:path += ";C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\130\Tools\Binn" # 2017
+$env:path += ";C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\110\Tools\Binn" # 2014 2016
+$env:path += ";C:\Program Files\Microsoft SQL Server\110\Tools\Binn" # 2012
 
 & SQLCMD.EXE -S $env:COMPUTERNAME -Q "SELECT @@VERSION"
 
