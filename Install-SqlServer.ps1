@@ -33,6 +33,11 @@ param(
 	[string]$LocalPathISO
 )
 
+## SQL Server 2012 or 2014 depend on .NET Framework 3.5
+## Which may not be availaber in newer Windows Server
+## Here checking if this .NET3.5 is available, if not install it
+## If .NET3.5 installation required and script is unable to install
+## Installation process will abort.
 if ($SQLVersion -eq 2014 -or $SQLVersion -eq 2012) {
 	$Net35State = (get-WindowsFeature -Name 'NET-Framework-Core')."InstallState"
 	if ($Net35State -ne 'Installed') {
@@ -50,6 +55,9 @@ if ($SQLVersion -eq 2014 -or $SQLVersion -eq 2012) {
 	}
 }
 
+## Friendly Message to let user know which ParamSet is used
+##   - Online 
+##   - Local
 if ($PSCmdlet.ParameterSetName -eq "Online") {
 	Write-Host "Online download option is chosen by you." -ForegroundColor Magenta
 	Write-Host "An Internet connection or valid internal HTTP connection is required" -ForegroundColor Magenta
@@ -76,6 +84,11 @@ $Link2016 = "https://download.microsoft.com/download/4/1/A/41AD6EDE-9794-44E3-B3
 $Link2017 = "https://download.microsoft.com/download/E/F/2/EF23C21D-7860-4F05-88CE-39AA114B014B/SQLServer2017-x64-ENU-Dev.iso"
 $Link2019 = 'https://download.microsoft.com/download/7/c/1/7c14e92e-bdcb-4f89-b7cf-93543e7112d1/SQLServer2019-x64-ENU-Dev.iso'
 
+# Determining the SQL Version Selected by user
+# based on the version parameter given by user
+# determine:
+# - ConfigurationFile to use
+# - ISO FileName extraction from download link for future reference
 switch ($SQLVersion) {
 	"2012" {  
 		if ($ConfigFile -eq "" -or $null -eq $ConfigFile) {
@@ -122,14 +135,20 @@ switch ($SQLVersion) {
 	}
 }
 
+# local media file folder, used for store ISO file, downloaded or copied
 $MediaFolder = Join-Path $PSScriptRoot "MediaFiles"
+# Actual ISO to mount/extract
 $MediaFilePath = Join-Path $MediaFolder $ISOFileName
 
+# Determining the Mode of ISO file obtaining process
+## - Download? or Local Copy?
 if ($PSCmdlet.ParameterSetName -eq 'Online') {
 	### When http download link is provided
 	### checking if the machine can reach the link via internet/intranet
 	if ($DownloadLinkISO -ne "") {
+		# just testing http link with 'HEAD' method to get HTTP code
 		$HttpStatus = (Invoke-WebRequest -Method Head -Uri $DownloadLinkISO -ErrorAction SilentlyContinue).StatusCode
+		# if none 2xx code is returned, the not reachable, abort
 		if ($HttpStatus -ne 200) {
 			throw "The link $DownloadLinkISO is NOT reachable please check network status or check the link provided is correct."
 		} else {
@@ -141,25 +160,32 @@ if ($PSCmdlet.ParameterSetName -eq 'Online') {
 		Write-Host "using link: $Link"
 	}
 	
-	$StartTime = Get-Date
+	$sw = [System.Diagnostics.Stopwatch]::StartNew()
+	#Downloading
 	(New-Object System.Net.WebClient).DownloadFile($Link, $MediaFilePath)
-	$EndTime = Get-Date
-	Write-Host "Time Taken to download the ISO file: $(($EndTime.Subtract($StartTime)).Seconds) second(s)"
+	$sw.Stop()
+	Write-Host @"
+Download Took: $($sw.Elapsed.Hours):$($sw.Elapsed.Minutes):$($sw.Elapsed.Seconds).
+"@
 }
 
+## If local/UNC path is provided, then just copy the ISO to local MediaFiles folder
 if ($PSCmdlet.ParameterSetName -eq 'Local') {
 	if ($LocalPathISO -eq '' -or $null -eq $LocalPathISO) {
 		throw "The path provided is an empty string or null value."
 	} 
+	## Checking if the path is reachable, if not abort!!!
 	if (!(Test-Path $LocalPathISO)) {
 		throw "The path provided is not reachable, please confirm the path is correct and reachable by this machine $env:COMPUTERNAME."
 	} 
 	Write-Host "Copying the ISO file pointed by you to this project folder:"
 	Write-Host "From: '$LocalPathISO' To: $MediaFilePath ..."
-	$StartTime = Get-Date
+	$sw = [System.Diagnostics.Stopwatch]::StartNew()
 	Copy-Item -Path $LocalPathISO -Destination $MediaFilePath
-	$EndTime = Get-Date
-	Write-Host "Time Taken to copy the ISO file: $(($EndTime.Subtract($StartTime)).Seconds) second(s)"
+	$sw.Stop()
+	Write-Host @"
+Copy ISO process took: $($sw.Elapsed.Hours):$($sw.Elapsed.Minutes):$($sw.Elapsed.Seconds).
+"@
 }
 
 ### All required configurations and paths are obtained 
@@ -169,20 +195,21 @@ $standardOutputFile = Join-Path $PSScriptRoot "Logs\StandardOutput.txt"
 #Removing old log files
 Remove-Item -Path $errorOutputFile -Force -ErrorAction SilentlyContinue
 Remove-Item -Path $standardOutputFile -Force -ErrorAction SilentlyContinue
-
+# Friendly message to write out to the console
 Write-Host "Configuration File: $ConfigFile"
 Write-Host "Standard output file: $standardOutputFile"
 Write-Host "Standard error output file: $errorOutputFile"
 
 Write-Host "Mounting DiskImage and extracting Drive Letter..." -ForegroundColor Magenta
-
+# Mounting the ISO file to available Drive on the system
 $MountedDriveLetter = Mount-DiskImage -ImagePath $MediaFilePath -PassThru | 
 						Get-Volume | 
 						% {Get-PSDrive -Name $_.DriveLetter} | 
 						% {$_.Root}
-
+#message letting know which drive letter is used
 Write-Host "Mount Drive letter: $MountedDriveLetter"
 Write-Host "Starting the installation of SQL Server..." -ForegroundColor Green
+# Installation process starts here
 Start-Process "$MountedDriveLetter\setup.exe" `
 			 -ArgumentList "/ConfigurationFile=$ConfigFile $OverrideConfigs" `
 			 -Wait `
@@ -190,10 +217,14 @@ Start-Process "$MountedDriveLetter\setup.exe" `
 			 -RedirectStandardError $errorOutputFile
 
 Write-Host "Dismounting the drive."
-Dismount-DiskImage -ImagePath $MediaFilePath
+#drive letter without ':'
+$DriveLetter = ($MountedDriveLetter).Split(':')[0]
+#dismounting the image
+Get-Volme $DriveLetter | Get-DiskImage | Dismount-DiskImage
 
+#Get All SQL Server related services 
 Get-Service *sql*
-
+#SQLCMD.exe paths and adding them to current session $env:PATH variable
 $env:Path += ";C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn" # 2019
 $env:path += ";C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\130\Tools\Binn" # 2017
 $env:path += ";C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\110\Tools\Binn" # 2014 2016
